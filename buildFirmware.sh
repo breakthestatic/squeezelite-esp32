@@ -32,6 +32,12 @@ fi
 
 echo "Copying target sdkconfig"
 cp build-scripts/${TARGET_BUILD_NAME}-sdkconfig.defaults sdkconfig
+echo "Installing Python protobuf deps for cspot/nanopb codegen"
+# The maintainer IDF image is missing these; without them the Spotify (cspot)
+# component's build-time nanopb protobuf generation fails with
+# "ModuleNotFoundError: No module named 'google'", which aborts the whole build
+# before squeezelite.bin is produced.
+pip install --quiet protobuf==4.25.6 grpcio-tools==1.62.3 || pip install --quiet protobuf grpcio-tools
 echo "Building project"
 idf.py build -DDEPTH=${DEPTH} -DBUILD_NUMBER=${BUILD_NUMBER}-${DEPTH} 
 echo "Generating size report"
