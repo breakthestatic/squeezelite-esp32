@@ -7,11 +7,13 @@
  * ------------
  *  - The device has no wall clock of its own, so we run an SNTP client. Until
  *    the first sync we render "--:--" so we never show a wrong time.
- *  - Drawing uses the display component's text engine with the built-in
- *    Font_Tarable7Seg_32x64 glyph set (32 wide x 64 tall). That font already
- *    covers ' '..'Z', which includes the digits and ':'. It requires the
- *    display component to be built with USE_LARGE_FONTS defined (otherwise
- *    GDS_FONT_SEGMENT falls back to a small font - see gds_text.c).
+ *  - Drawing uses a normal proportional-looking monospace font
+ *    (Font_droid_sans_mono_16x31) blitted at an integer 2x scale, giving
+ *    ~32x62px glyphs that fill the 64px height while looking like a regular
+ *    clock rather than a 7-segment LCD. We read the X-GLCD glyph format
+ *    directly (see gds_font.c) and plot each source pixel as a scale x scale
+ *    block via GDS_DrawPixel. This needs no USE_LARGE_FONTS and renders a
+ *    proper ':' colon between hours and minutes.
  *  - A 1 Hz FreeRTOS timer repaints while active. The clock is only active
  *    when the player is powered off, so this costs nothing during playback.
  *
@@ -34,6 +36,7 @@
 #include "gds.h"
 #include "gds_text.h"
 #include "gds_font.h"
+#include "gds_draw.h"        /* GDS_DrawPixel */
 
 static const char *TAG = "bigclock";
 
@@ -139,6 +142,64 @@ static void format_time(char *buf, size_t len) {
     }
 }
 
+/* ---- scaled normal-font rendering ------------------------------------- */
+/* We draw a regular monospace font at an integer scale so it looks like a
+ * normal clock (with a real colon) but still fills the tall panel. The font
+ * data uses the X-GLCD column-major format described in gds_font.h:
+ *   glyph = [width][col0 bytes][col1 bytes]... , RoundUpHeight/8 bytes/col,
+ *   pixel(row i) = bit (i & 7) of byte (i / 8) within the column.        */
+
+#define BC_FONT   (&Font_droid_sans_mono_16x31)
+#define BC_SCALE  2
+
+static int round_up8(int h) { return (h % 8) ? (((h + 7) / 8) * 8) : h; }
+
+/* Width in source pixels of one glyph (monospace fonts report a fixed width,
+ * but the per-glyph width byte is authoritative and matches the drawing). */
+static int glyph_src_width(const struct GDS_FontDef *f, char c) {
+    if (c < f->StartChar || c > f->EndChar) return 0;
+    if (f->Monospace) return f->Width;
+    int colBytes = round_up8(f->Height) / 8;
+    const uint8_t *g = &f->FontData[(c - f->StartChar) * (f->Width * colBytes + 1)];
+    return *g;                  /* first byte is this glyph's width */
+}
+
+/* Draw one glyph with its top-left at (x0,y0), each source pixel expanded to
+ * a scale x scale block. */
+static void draw_glyph_scaled(char c, int x0, int y0, int scale) {
+    const struct GDS_FontDef *f = BC_FONT;
+    if (c < f->StartChar || c > f->EndChar) return;
+
+    int colBytes = round_up8(f->Height) / 8;
+    const uint8_t *g = &f->FontData[(c - f->StartChar) * (f->Width * colBytes + 1)];
+    g++;                        /* skip per-glyph width byte; column data follows */
+    /* For monospace fonts the engine draws the full cell width (f->Width);
+     * for proportional fonts it draws the glyph's own width byte. Match that
+     * so alignment is identical to the normal text engine. */
+    int w = f->Monospace ? f->Width : glyph_src_width(f, c);
+
+    for (int col = 0; col < w; col++) {
+        const uint8_t *colData = g + col * colBytes;
+        for (int row = 0; row < f->Height; row++) {
+            int yByte = row / 8, yBit = row & 7;
+            if (colData[yByte] & (1 << yBit)) {
+                int px = x0 + col * scale;
+                int py = y0 + row * scale;
+                for (int dx = 0; dx < scale; dx++)
+                    for (int dy = 0; dy < scale; dy++)
+                        GDS_DrawPixel(display, px + dx, py + dy, GDS_COLOR_WHITE);
+            }
+        }
+    }
+}
+
+/* Total rendered width of a string at the given scale. */
+static int string_scaled_width(const char *s, int scale) {
+    int w = 0;
+    for (; *s; s++) w += glyph_src_width(BC_FONT, *s) * scale;
+    return w;
+}
+
 /* Paint the clock centered on the full display height. */
 static void draw(void) {
     if (!display) return;
@@ -146,11 +207,26 @@ static void draw(void) {
     char buf[8];
     format_time(buf, sizeof(buf));
 
-    /* Clear the whole panel, then draw the big font centered (both axes).
-     * GDS_TEXT_CENTERED anchors at the middle of the display, so on a 64px
-     * panel the 64px-tall glyphs fill the height. */
-    GDS_TextPos(display, GDS_FONT_SEGMENT, GDS_TEXT_CENTERED,
-                GDS_TEXT_CLEAR | GDS_TEXT_UPDATE, buf);
+    int scale = BC_SCALE;
+    int panelW = GDS_GetWidth(display);
+    int panelH = GDS_GetHeight(display);
+    int textW  = string_scaled_width(buf, scale);
+    int textH  = BC_FONT->Height * scale;
+
+    int x0 = (panelW - textW) / 2;
+    int y0 = (panelH - textH) / 2;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+
+    GDS_Clear(display, GDS_COLOR_BLACK);
+
+    int x = x0;
+    for (const char *p = buf; *p; p++) {
+        draw_glyph_scaled(*p, x, y0, scale);
+        x += glyph_src_width(BC_FONT, *p) * scale;
+    }
+
+    GDS_Update(display);
 }
 
 static void timer_cb(TimerHandle_t t) {
