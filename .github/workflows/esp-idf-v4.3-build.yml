@@ -37,14 +37,10 @@ jobs:
       with:
         fetch-depth: 15
         submodules: true
-    - name: Cache build
-      id: cache-build
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/build 
-          ./
-        key: ${{ runner.os }}-${{ matrix.node }}
+    # NOTE: the original 'Cache build' step cached the ENTIRE workspace ('./')
+    # under a static key with no commit hash, so it restored stale build/ and
+    # source across runs and prevented a clean compile. Removed to force a
+    # from-scratch build.
     - name: Set build parameters
       run: |
         git update-index --chmod=+x ./server_certs/getcert.sh
