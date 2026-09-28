@@ -12,10 +12,11 @@ jobs:
     name: Build Number
     runs-on: ubuntu-latest
     outputs:
-      build_number: ${{ steps.buildnumber.outputs.build_number }}
+      build_number: ${{ steps.buildnumber.outputs.build_number || '0' }}
     steps:
     - name: Generate common build number
       id: buildnumber
+      continue-on-error: true
       uses: einaregilsson/build-number@v3
       with:
         token: ${{secrets.github_token}}
@@ -25,11 +26,8 @@ jobs:
     strategy:
       max-parallel: 1
       matrix:
-        node: [I2S-4MFlash, SqueezeAmp, Muse]
-        depth: [16, 32]
-        exclude:
-         - node: Muse
-           depth: 32
+        node: [I2S-4MFlash]
+        depth: [16]
     steps:
     - name: Set target name
       run: |

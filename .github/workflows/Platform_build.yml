@@ -2,7 +2,7 @@ name: Platform Build
 on: 
   push:
     branches: 
-      - '**4.3'
+      - 'disabled-on-fork-**4.3'
   workflow_dispatch:
     inputs:
       ui_build:
