@@ -38,9 +38,26 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_pm.h"
+
+/* Chip-revision detection API moved around between IDF versions.
+ * Newer IDF (v5.x) uses soc/chip_revision.h + hal/efuse_hal.h with
+ * ESP_CHIP_REV_ABOVE(efuse_hal_chip_revision(), 100). IDF v4.3.x does not
+ * ship those headers; it exposes esp_efuse_get_chip_ver() instead, where
+ * rev0 silicon == 0. Provide a compatibility shim so this override builds
+ * on both. */
+#if __has_include("soc/chip_revision.h") && __has_include("hal/efuse_hal.h")
 #include "soc/chip_revision.h"
 #include "hal/efuse_hal.h"
+#define BIGCLOCK_CHIP_REV_AT_LEAST_1_00() ESP_CHIP_REV_ABOVE(efuse_hal_chip_revision(), 100)
+#else
+#include "esp_efuse.h"
+/* esp_efuse_get_chip_ver() returns 0 for ESP32 rev0, >=1 otherwise */
+#define BIGCLOCK_CHIP_REV_AT_LEAST_1_00() (esp_efuse_get_chip_ver() >= 1)
+#endif
+
+#if __has_include("esp_rom_gpio.h")
 #include "esp_rom_gpio.h"
+#endif
 
 #include "sdkconfig.h"
 
@@ -194,7 +211,7 @@ static float i2s_apll_get_fi2s(int bits_per_sample, int sdm0, int sdm1, int sdm2
 
 #if CONFIG_IDF_TARGET_ESP32
     /* ESP32 rev0 silicon issue for APLL range/accuracy, please see ESP32 ECO document for more information on this */
-    if (!ESP_CHIP_REV_ABOVE(efuse_hal_chip_revision(), 100)) {
+    if (!BIGCLOCK_CHIP_REV_AT_LEAST_1_00()) {
         sdm0 = 0;
         sdm1 = 0;
     }
