@@ -33,13 +33,13 @@ jobs:
       run: |
         echo "TARGET_BUILD_NAME=${{ matrix.node }}" >> $GITHUB_ENV
         echo "build_version_prefix=2." >> $GITHUB_ENV
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 15
         submodules: true
     - name: Cache build
       id: cache-build
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       with:
         path: |
           ~/build 
@@ -110,7 +110,7 @@ jobs:
     #     echo "mock content"> size_comp1.txt
     #     echo "mock content"> size_comp2.txt
     #     echo "mock content"> ../partitions.csv
-    - uses: actions/upload-artifact@v2
+    - uses: actions/upload-artifact@v4
       with:
         name: ${{ env.artifact_file_name }}
         path: |
@@ -124,7 +124,7 @@ jobs:
           sdkconfig
           server_certs/github.pem
           build_output.zip
-    - uses: actions/upload-artifact@v2
+    - uses: actions/upload-artifact@v4
       with:
         name: ${{ env.artifact_bin_file_name }}
         path: |
