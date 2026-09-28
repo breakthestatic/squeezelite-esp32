@@ -16,6 +16,10 @@
 #include "gds_text.h"
 #include "gds_draw.h"
 #include "gds_image.h"
+#include "bigclock.h"
+
+/* Player power/output state, defined in output.c. OUTPUT_OFF == -1. */
+extern struct outputstate output;
 #include "led_vu.h"
 
 #pragma pack(push, 1)
@@ -364,6 +368,11 @@ bool sb_displayer_init(void) {
 	
 	// inform LMS of our screen/led dimensions
 	sendSETD(GDS_GetWidth(display), GDS_GetHeight(display), led_visu.config);
+
+	// Big Clock: native full-height standby clock on tall panels (e.g. 256x64
+	// SSD1322). Reads NVS clock_config and applies timezone. SNTP is started
+	// on first activation (see bigclock.c).
+	bigclock_init();
 	
 	dsps_fft2r_init_fc32(meters.fft, FFT_LEN);
 	dsps_wind_hann_f32(meters.hanning, FFT_LEN);
@@ -698,6 +707,24 @@ static void grfe_handler( u8_t *data, int len) {
 	xSemaphoreTake(displayer.mutex, portMAX_DELAY);
 	
 	scroller.active = false;
+
+	// --- Big Clock power-state edge detection & takeover ------------------
+	// Activate when the player is off; deactivate as soon as it is back on.
+	// Only take over on panels tall enough to benefit (height > SB_HEIGHT).
+	if (GDS_GetHeight(display) > SB_HEIGHT) {
+		if (output.state == OUTPUT_OFF) {
+			if (!bigclock_is_active()) bigclock_activate();
+		} else if (bigclock_is_active()) {
+			bigclock_deactivate();
+			displayer.dirty = true;	// force a clean repaint of the LMS UI
+		}
+	}
+	// While the clock owns the panel, ignore this LMS frame entirely.
+	if (bigclock_is_active()) {
+		xSemaphoreGive(displayer.mutex);
+		return;
+	}
+	// ----------------------------------------------------------------------
 	
 	// full screen artwork or for small screen, full screen visu has priority
 	if (((visu.mode & VISU_ESP32) && !visu.col && visu.row < displayer.height) || artwork.full) {
@@ -1367,7 +1394,7 @@ static void displayer_task(void *args) {
 				memcpy(scroller.frame, scroller.back.frame, scroller.back.width * displayer.height / 8);
 				for (int i = 0; i < scroller.width * displayer.height / 8; i++) scroller.frame[i] |= scroller.scroll.frame[scroller.scrolled * displayer.height / 8 + i];
 				scroller.scrolled += scroller.by;
-				if (displayer.owned) GDS_DrawBitmapCBR(display, scroller.frame, scroller.width, displayer.height, GDS_COLOR_WHITE);	
+				if (displayer.owned && !bigclock_is_active()) GDS_DrawBitmapCBR(display, scroller.frame, scroller.width, displayer.height, GDS_COLOR_WHITE);	
 				
 				// short sleep & don't need background update
 				scroller.wake = scroller.speed;
@@ -1396,7 +1423,7 @@ static void displayer_task(void *args) {
 		}
 		
 		// need to make sure we own display
-		if (display && displayer.owned) GDS_Update(display);
+		if (display && displayer.owned && !bigclock_is_active()) GDS_Update(display);
 		else if (!led_display) displayer.wake = LONG_WAKE;
 	
 		// release semaphore and sleep what's needed
