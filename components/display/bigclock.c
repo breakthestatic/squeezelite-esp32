@@ -169,13 +169,24 @@ static void format_time(char *buf, size_t len) {
  *   pixel(row i) = bit (i & 7) of byte (i / 8) within the column.        */
 
 #define BC_FONT   (&Font_squeezebox_standard)
-#define BC_SCALE  4            /* 16px cell * 4 = 64px, fills the panel height */
 
-/* The glyphs ink only the top rows of the 16px cell (standard.1 is top-aligned
- * with ~10px of real content). Center on that inked band, not the padded cell,
- * so the clock sits vertically centered rather than stuck to the top. */
-#define BC_INK_TOP 0          /* first inked visual row in the cell */
-#define BC_INK_H   10         /* height of the inked band, in source pixels */
+/* standard.1 is a SMALL source font: the digit glyphs ink only rows 1..7 of the
+ * 16px cell (~7px of real content). To match the on-panel size of the previous
+ * Droid-Sans-Mono-at-2x look (~60px tall digits) we scale this 8x: 7px ink * 8
+ * = 56px, filling most of the 64px panel while leaving a little margin and
+ * staying within the 256px width even for the widest "12:34". */
+#define BC_SCALE  8
+
+/* The real inked band within the cell, measured from the generated glyphs
+ * (see tools/bigclock-font: digits ink rows 1..7). Centering and the on-panel
+ * clamp use THIS band, not the full 16px cell (most of which is empty). */
+#define BC_INK_TOP 1          /* first inked row in the cell */
+#define BC_INK_H   7          /* height of the inked band, in source pixels */
+
+/* Gap between adjacent glyphs, in SOURCE pixels (scaled with BC_SCALE). The
+ * standard.1 glyph widths are tight with no built-in side bearing, so without
+ * this the digits and colon touch. 1 source px * 8 = 8px on-panel. */
+#define BC_GAP    1
 
 static int round_up8(int h) { return (h % 8) ? (((h + 7) / 8) * 8) : h; }
 
@@ -218,10 +229,15 @@ static void draw_glyph_scaled(char c, int x0, int y0, int scale) {
     }
 }
 
-/* Total rendered width of a string at the given scale. */
+/* Total rendered width of a string at the given scale, including the BC_GAP
+ * inter-character gap between (but not after) glyphs. Must match the advance
+ * used in draw() so horizontal centering is correct. */
 static int string_scaled_width(const char *s, int scale) {
     int w = 0;
-    for (; *s; s++) w += glyph_src_width(BC_FONT, *s) * scale;
+    for (; *s; s++) {
+        if (w) w += BC_GAP * scale;         /* gap before every glyph except the first */
+        w += glyph_src_width(BC_FONT, *s) * scale;
+    }
     return w;
 }
 
@@ -245,18 +261,21 @@ static void draw(void) {
      * centered. */
     int y0 = (panelH - textH) / 2 - BC_INK_TOP * scale + s_yoff;
     if (x0 < 0) x0 = 0;
-    /* Clamp so the full glyph cell stays on-panel regardless of s_yoff: the
-     * blit spans BC_FONT->Height*scale from y0, so keep 0 <= y0 <= panelH-cellH. */
-    int cellH = BC_FONT->Height * scale;
-    int y0max = panelH - cellH;
-    if (y0max < 0) y0max = 0;
-    if (y0 > y0max) y0 = y0max;
-    if (y0 < 0) y0 = 0;
+    /* Clamp so the INKED band stays on-panel regardless of s_yoff. The cell is
+     * much taller than the ink (mostly empty rows below), so clamp against the
+     * ink extent, not BC_FONT->Height: keep the inked band's top (y0 +
+     * BC_INK_TOP*scale) within [0, panelH - BC_INK_H*scale]. */
+    int inkTopMin = 0 - BC_INK_TOP * scale;                 /* y0 that puts ink top at panel 0 */
+    int inkTopMax = (panelH - BC_INK_H * scale) - BC_INK_TOP * scale;
+    if (inkTopMax < inkTopMin) inkTopMax = inkTopMin;
+    if (y0 > inkTopMax) y0 = inkTopMax;
+    if (y0 < inkTopMin) y0 = inkTopMin;
 
     GDS_Clear(display, GDS_COLOR_BLACK);
 
     int x = x0;
     for (const char *p = buf; *p; p++) {
+        if (p != buf) x += BC_GAP * scale;      /* gap before every glyph except the first */
         draw_glyph_scaled(*p, x, y0, scale);
         x += glyph_src_width(BC_FONT, *p) * scale;
     }
