@@ -47,19 +47,26 @@ static const char *TAG = "bigclock";
 extern struct GDS_Device *display;
 
 /* ---- configuration (from NVS "clock_config") -------------------------- */
-/* Syntax: tz=<POSIX TZ>[,ntp=<server>][,fmt=12|24][,yoff=<pixels>]
- * Example: tz=EST5EDT,M3.2.0,M11.1.0,ntp=pool.ntp.org,fmt=12,yoff=-16
+/* Syntax: tz=<POSIX TZ>[,ntp=<server>][,fmt=12|24][,yoff=<pixels>][,scale=<n>]
+ * Example: tz=EST5EDT,M3.2.0,M11.1.0,ntp=pool.ntp.org,fmt=12,yoff=-16,scale=7
  *
  * yoff is a signed vertical offset in panel pixels applied as a delta from the
  * vertically-centered position: negative moves the clock UP, positive moves it
- * DOWN, 0 (default) is centered. It lets you re-position the clock to suit how
- * the panel is physically mounted in the case without rebuilding firmware -
- * just edit the NVS value and reboot (bigclock_init re-reads it at startup).
+ * DOWN, 0 (default) is centered.
+ *
+ * scale is the integer font magnification (source px -> panel px), default
+ * BC_SCALE_DEF, clamped to BC_SCALE_MIN..BC_SCALE_MAX. The digit ink is ~7px
+ * tall, so on-panel digit height ~= 7 * scale (scale 7 ~= 49px, 8 ~= 56px).
+ *
+ * Both yoff and scale let you tune the clock live to suit how the panel is
+ * physically mounted, without rebuilding firmware - edit the NVS value and
+ * reboot (bigclock_init re-reads it at startup).
  */
 static char  s_tz[64]   = "UTC0";
 static char  s_ntp[64]  = "pool.ntp.org";
 static bool  s_fmt12    = false;
 static int   s_yoff     = 0;    /* vertical offset, px; -up / +down, delta from center */
+static int   s_scale    = 0;    /* font magnification; set from NVS 'scale=' in init, clamped */
 
 static bool        s_active      = false;
 static bool        s_sntp_started = false;
@@ -98,14 +105,22 @@ void bigclock_init(void) {
         if (parse_kv(cfg, "yoff=", tmp, sizeof(tmp))) {
             s_yoff = atoi(tmp);     /* signed; negative = up, positive = down */
         }
+        if (parse_kv(cfg, "scale=", tmp, sizeof(tmp))) {
+            s_scale = atoi(tmp);
+        }
         free(cfg);
     }
+
+    /* Default and clamp the font scale to a drawable range. */
+    if (s_scale <= 0) s_scale = BC_SCALE_DEF;
+    if (s_scale < BC_SCALE_MIN) s_scale = BC_SCALE_MIN;
+    if (s_scale > BC_SCALE_MAX) s_scale = BC_SCALE_MAX;
 
     /* Apply timezone so localtime() is correct. */
     setenv("TZ", s_tz, 1);
     tzset();
 
-    ESP_LOGI(TAG, "init tz='%s' ntp='%s' fmt=%s yoff=%d", s_tz, s_ntp, s_fmt12 ? "12h" : "24h", s_yoff);
+    ESP_LOGI(TAG, "init tz='%s' ntp='%s' fmt=%s yoff=%d scale=%d", s_tz, s_ntp, s_fmt12 ? "12h" : "24h", s_yoff, s_scale);
 
     /* Create (but do not start) the 1 Hz repaint timer. */
     if (!s_timer) {
@@ -171,11 +186,14 @@ static void format_time(char *buf, size_t len) {
 #define BC_FONT   (&Font_squeezebox_standard)
 
 /* standard.1 is a SMALL source font: the digit glyphs ink only rows 1..7 of the
- * 16px cell (~7px of real content). To match the on-panel size of the previous
- * Droid-Sans-Mono-at-2x look (~60px tall digits) we scale this 8x: 7px ink * 8
- * = 56px, filling most of the 64px panel while leaving a little margin and
- * staying within the 256px width even for the widest "12:34". */
-#define BC_SCALE  8
+ * 16px cell (~7px of real content). On-panel digit height ~= 7 * scale, so the
+ * default below (7) gives ~49px, close to the previous Droid-Sans-Mono-at-2x
+ * look while staying within the 256px width even for the widest "12:34". The
+ * scale is runtime-tunable via the NVS 'scale=' key (see s_scale); these set the
+ * default and the clamp bounds. BC_SCALE_MAX 9 keeps "12:34" within 256px. */
+#define BC_SCALE_DEF  7
+#define BC_SCALE_MIN  2
+#define BC_SCALE_MAX  9
 
 /* The real inked band within the cell, measured from the generated glyphs
  * (see tools/bigclock-font: digits ink rows 1..7). Centering and the on-panel
@@ -183,7 +201,7 @@ static void format_time(char *buf, size_t len) {
 #define BC_INK_TOP 1          /* first inked row in the cell */
 #define BC_INK_H   7          /* height of the inked band, in source pixels */
 
-/* Gap between adjacent glyphs, in SOURCE pixels (scaled with BC_SCALE). The
+/* Gap between adjacent glyphs, in SOURCE pixels (scaled with the font scale). The
  * standard.1 glyph widths are tight with no built-in side bearing, so without
  * this the digits and colon touch. 1 source px * 8 = 8px on-panel. */
 #define BC_GAP    1
@@ -248,7 +266,8 @@ static void draw(void) {
     char buf[8];
     format_time(buf, sizeof(buf));
 
-    int scale = BC_SCALE;
+    int scale = s_scale;        /* from NVS 'scale=', defaulted/clamped in bigclock_init */
+    if (scale <= 0) scale = BC_SCALE_DEF;   /* guard if draw() ever runs before init */
     int panelW = GDS_GetWidth(display);
     int panelH = GDS_GetHeight(display);
     int textW  = string_scaled_width(buf, scale);
