@@ -55,13 +55,23 @@ extern struct GDS_Device *display;
  * DOWN, 0 (default) is centered.
  *
  * scale is the integer font magnification (source px -> panel px), default
- * BC_SCALE_DEF, clamped to BC_SCALE_MIN..BC_SCALE_MAX. The digit ink is ~7px
- * tall, so on-panel digit height ~= 7 * scale (scale 7 ~= 49px, 8 ~= 56px).
+ * BIGCLOCK_SCALE_DEF, clamped to BIGCLOCK_SCALE_MIN..BIGCLOCK_SCALE_MAX. The
+ * digit ink is ~7px tall, so on-panel digit height ~= 7 * scale (scale 7 ~=
+ * 49px, 8 ~= 56px).
  *
  * Both yoff and scale let you tune the clock live to suit how the panel is
  * physically mounted, without rebuilding firmware - edit the NVS value and
  * reboot (bigclock_init re-reads it at startup).
  */
+
+/* Font scale default and clamp bounds. These are declared here (before
+ * bigclock_init, which clamps against them) and use a BIGCLOCK_ prefix rather
+ * than BC_ because the toolchain's <sys/syslimits.h> already defines BC_*
+ * macros (e.g. BC_SCALE_MAX for the bc(1) calculator), which collide. */
+#define BIGCLOCK_SCALE_DEF  7
+#define BIGCLOCK_SCALE_MIN  2
+#define BIGCLOCK_SCALE_MAX  9   /* keeps the widest "12:34" within 256px */
+
 static char  s_tz[64]   = "UTC0";
 static char  s_ntp[64]  = "pool.ntp.org";
 static bool  s_fmt12    = false;
@@ -112,9 +122,9 @@ void bigclock_init(void) {
     }
 
     /* Default and clamp the font scale to a drawable range. */
-    if (s_scale <= 0) s_scale = BC_SCALE_DEF;
-    if (s_scale < BC_SCALE_MIN) s_scale = BC_SCALE_MIN;
-    if (s_scale > BC_SCALE_MAX) s_scale = BC_SCALE_MAX;
+    if (s_scale <= 0) s_scale = BIGCLOCK_SCALE_DEF;
+    if (s_scale < BIGCLOCK_SCALE_MIN) s_scale = BIGCLOCK_SCALE_MIN;
+    if (s_scale > BIGCLOCK_SCALE_MAX) s_scale = BIGCLOCK_SCALE_MAX;
 
     /* Apply timezone so localtime() is correct. */
     setenv("TZ", s_tz, 1);
@@ -187,13 +197,11 @@ static void format_time(char *buf, size_t len) {
 
 /* standard.1 is a SMALL source font: the digit glyphs ink only rows 1..7 of the
  * 16px cell (~7px of real content). On-panel digit height ~= 7 * scale, so the
- * default below (7) gives ~49px, close to the previous Droid-Sans-Mono-at-2x
- * look while staying within the 256px width even for the widest "12:34". The
- * scale is runtime-tunable via the NVS 'scale=' key (see s_scale); these set the
- * default and the clamp bounds. BC_SCALE_MAX 9 keeps "12:34" within 256px. */
-#define BC_SCALE_DEF  7
-#define BC_SCALE_MIN  2
-#define BC_SCALE_MAX  9
+ * default (BIGCLOCK_SCALE_DEF = 7) gives ~49px, close to the previous
+ * Droid-Sans-Mono-at-2x look while staying within the 256px width even for the
+ * widest "12:34". The scale is runtime-tunable via the NVS 'scale=' key; the
+ * default and clamp bounds (BIGCLOCK_SCALE_*) are defined up near the config
+ * block above, before bigclock_init() clamps against them. */
 
 /* The real inked band within the cell, measured from the generated glyphs
  * (see tools/bigclock-font: digits ink rows 1..7). Centering and the on-panel
@@ -267,7 +275,7 @@ static void draw(void) {
     format_time(buf, sizeof(buf));
 
     int scale = s_scale;        /* from NVS 'scale=', defaulted/clamped in bigclock_init */
-    if (scale <= 0) scale = BC_SCALE_DEF;   /* guard if draw() ever runs before init */
+    if (scale <= 0) scale = BIGCLOCK_SCALE_DEF;   /* guard if draw() ever runs before init */
     int panelW = GDS_GetWidth(display);
     int panelH = GDS_GetHeight(display);
     int textW  = string_scaled_width(buf, scale);
