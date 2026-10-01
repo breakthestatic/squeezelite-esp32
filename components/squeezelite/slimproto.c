@@ -24,6 +24,7 @@
 
 #include "squeezelite.h"
 #include "slimproto.h"
+#include "bigclock.h"
 
 static log_level loglevel;
 
@@ -459,6 +460,12 @@ static void process_aude(u8_t *pkt, int len) {
 #endif    
 
 	LOCK_O;
+	// Latch the LMS power signal for the big-clock displayer, UNCONDITIONALLY
+	// (independent of output.state). On a cold boot output.state is
+	// OUTPUT_STOPPED, not OUTPUT_OFF, so the displayer can't rely on it to tell
+	// whether the player is off; it keys clock takeover off this real power bit
+	// instead. true = powered OFF (show clock), false = powered ON (release it).
+	bigclock_lms_power_off = !aude->enable_spdif;
 	if (!aude->enable_spdif && output.state != OUTPUT_OFF) {
 		output.state = OUTPUT_OFF;
 	}

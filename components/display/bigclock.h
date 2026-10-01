@@ -36,6 +36,14 @@ void bigclock_deactivate(void);
  * its own (LMS-driven) drawing while the clock is showing. */
 bool bigclock_is_active(void);
 
+/* LMS power intent, latched from the `aude` command's enable_spdif bit by
+ * slimproto's process_aude: true = LMS says powered OFF (show the clock),
+ * false = powered ON. The displayer keys clock takeover off this signal rather
+ * than output.state, because on a cold boot output.state is OUTPUT_STOPPED (not
+ * OUTPUT_OFF) until the first aude arrives, which made the clock fail to release
+ * to the LMS UI on first power-on. Defined in bigclock.c, defaults to OFF. */
+extern bool bigclock_lms_power_off;
+
 #ifdef __cplusplus
 }
 #endif

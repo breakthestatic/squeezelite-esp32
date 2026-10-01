@@ -85,6 +85,8 @@ extern const struct GDS_FontDef Font_Tarable7Seg_32x64;
 extern const struct GDS_FontDef Font_line_1;
 extern const struct GDS_FontDef Font_line_2;
 
+extern const struct GDS_FontDef Font_squeezebox_standard;
+
 #ifdef __cplusplus
 }
 #endif

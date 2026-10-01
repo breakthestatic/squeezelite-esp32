@@ -7,13 +7,15 @@
  * ------------
  *  - The device has no wall clock of its own, so we run an SNTP client. Until
  *    the first sync we render "--:--" so we never show a wrong time.
- *  - Drawing uses a normal proportional-looking monospace font
- *    (Font_droid_sans_mono_16x31) blitted at an integer 2x scale, giving
- *    ~32x62px glyphs that fill the 64px height while looking like a regular
- *    clock rather than a 7-segment LCD. We read the X-GLCD glyph format
- *    directly (see gds_font.c) and plot each source pixel as a scale x scale
- *    block via GDS_DrawPixel. This needs no USE_LARGE_FONTS and renders a
- *    proper ':' colon between hours and minutes.
+ *  - Drawing uses Font_squeezebox_standard, derived from the original LMS
+ *    `standard.1` bitmap - the real Squeezebox Classic / SB3 VFD screensaver
+ *    font (a FreeSans-derived proportional sans-serif). It is blitted at an
+ *    integer 4x scale: the 16px cell * 4 = 64px fills the panel height, giving
+ *    a chunky "VFD pixel" look that matches the authentic Squeezebox clock
+ *    while keeping real glyph shapes (not 7-segment, not monospace). We read
+ *    the X-GLCD glyph format directly (see gds_font.c) and plot each source
+ *    pixel as a scale x scale block via GDS_DrawPixel. This renders a proper
+ *    ':' colon between hours and minutes.
  *  - A 1 Hz FreeRTOS timer repaints while active. The clock is only active
  *    when the player is powered off, so this costs nothing during playback.
  *
@@ -45,16 +47,28 @@ static const char *TAG = "bigclock";
 extern struct GDS_Device *display;
 
 /* ---- configuration (from NVS "clock_config") -------------------------- */
-/* Syntax: tz=<POSIX TZ>[,ntp=<server>][,fmt=12|24]
- * Example: tz=EST5EDT,M3.2.0,M11.1.0,ntp=pool.ntp.org,fmt=12
+/* Syntax: tz=<POSIX TZ>[,ntp=<server>][,fmt=12|24][,yoff=<pixels>]
+ * Example: tz=EST5EDT,M3.2.0,M11.1.0,ntp=pool.ntp.org,fmt=12,yoff=-16
+ *
+ * yoff is a signed vertical offset in panel pixels applied as a delta from the
+ * vertically-centered position: negative moves the clock UP, positive moves it
+ * DOWN, 0 (default) is centered. It lets you re-position the clock to suit how
+ * the panel is physically mounted in the case without rebuilding firmware -
+ * just edit the NVS value and reboot (bigclock_init re-reads it at startup).
  */
 static char  s_tz[64]   = "UTC0";
 static char  s_ntp[64]  = "pool.ntp.org";
 static bool  s_fmt12    = false;
+static int   s_yoff     = 0;    /* vertical offset, px; -up / +down, delta from center */
 
 static bool        s_active      = false;
 static bool        s_sntp_started = false;
 static TimerHandle_t s_timer      = NULL;
+
+/* LMS power intent (see bigclock.h). Initialized to powered-OFF so the first
+ * grfe frame after a cold boot shows the clock and the first power-ON aude
+ * releases it. Static-initialized so it is correct before any code runs. */
+bool bigclock_lms_power_off = true;
 
 /* forward */
 static void draw(void);
@@ -81,6 +95,9 @@ void bigclock_init(void) {
         if (parse_kv(cfg, "fmt=", tmp, sizeof(tmp))) {
             s_fmt12 = (strncmp(tmp, "12", 2) == 0);
         }
+        if (parse_kv(cfg, "yoff=", tmp, sizeof(tmp))) {
+            s_yoff = atoi(tmp);     /* signed; negative = up, positive = down */
+        }
         free(cfg);
     }
 
@@ -88,7 +105,7 @@ void bigclock_init(void) {
     setenv("TZ", s_tz, 1);
     tzset();
 
-    ESP_LOGI(TAG, "init tz='%s' ntp='%s' fmt=%s", s_tz, s_ntp, s_fmt12 ? "12h" : "24h");
+    ESP_LOGI(TAG, "init tz='%s' ntp='%s' fmt=%s yoff=%d", s_tz, s_ntp, s_fmt12 ? "12h" : "24h", s_yoff);
 
     /* Create (but do not start) the 1 Hz repaint timer. */
     if (!s_timer) {
@@ -133,8 +150,10 @@ static void format_time(char *buf, size_t len) {
         hour %= 12;
         if (hour == 0) hour = 12;
     }
-    /* Font is monospace 7-seg; keep it plain HH:MM. Leading space instead of
-     * leading zero in 12h mode so single-digit hours look natural. */
+    /* 12h mode: single-digit hours have no leading zero and no leading space
+     * (e.g. "9:05"), matching the original Squeezebox clock. 24h mode (and 12h
+     * two-digit hours) keep the zero-padded "09:05"/"21:05" form. AM/PM is
+     * intentionally not shown so the big digits can stay maximally large. */
     if (s_fmt12 && hour < 10) {
         snprintf(buf, len, "%d:%02d", hour, tm.tm_min);
     } else {
@@ -149,8 +168,14 @@ static void format_time(char *buf, size_t len) {
  *   glyph = [width][col0 bytes][col1 bytes]... , RoundUpHeight/8 bytes/col,
  *   pixel(row i) = bit (i & 7) of byte (i / 8) within the column.        */
 
-#define BC_FONT   (&Font_droid_sans_mono_16x31)
-#define BC_SCALE  2
+#define BC_FONT   (&Font_squeezebox_standard)
+#define BC_SCALE  4            /* 16px cell * 4 = 64px, fills the panel height */
+
+/* The glyphs ink only the top rows of the 16px cell (standard.1 is top-aligned
+ * with ~10px of real content). Center on that inked band, not the padded cell,
+ * so the clock sits vertically centered rather than stuck to the top. */
+#define BC_INK_TOP 0          /* first inked visual row in the cell */
+#define BC_INK_H   10         /* height of the inked band, in source pixels */
 
 static int round_up8(int h) { return (h % 8) ? (((h + 7) / 8) * 8) : h; }
 
@@ -211,11 +236,21 @@ static void draw(void) {
     int panelW = GDS_GetWidth(display);
     int panelH = GDS_GetHeight(display);
     int textW  = string_scaled_width(buf, scale);
-    int textH  = BC_FONT->Height * scale;
+    int textH  = BC_INK_H * scale;      /* center on inked pixels, not padding */
 
     int x0 = (panelW - textW) / 2;
-    int y0 = (panelH - textH) / 2;
+    /* y0 places the inked band centered; subtract BC_INK_TOP*scale so the top
+     * of the glyph cell lands above the band by the same offset the font uses.
+     * s_yoff (from NVS) nudges it: negative = up, positive = down, delta from
+     * centered. */
+    int y0 = (panelH - textH) / 2 - BC_INK_TOP * scale + s_yoff;
     if (x0 < 0) x0 = 0;
+    /* Clamp so the full glyph cell stays on-panel regardless of s_yoff: the
+     * blit spans BC_FONT->Height*scale from y0, so keep 0 <= y0 <= panelH-cellH. */
+    int cellH = BC_FONT->Height * scale;
+    int y0max = panelH - cellH;
+    if (y0max < 0) y0max = 0;
+    if (y0 > y0max) y0 = y0max;
     if (y0 < 0) y0 = 0;
 
     GDS_Clear(display, GDS_COLOR_BLACK);

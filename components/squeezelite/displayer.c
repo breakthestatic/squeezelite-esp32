@@ -709,10 +709,14 @@ static void grfe_handler( u8_t *data, int len) {
 	scroller.active = false;
 
 	// --- Big Clock power-state edge detection & takeover ------------------
-	// Activate when the player is off; deactivate as soon as it is back on.
-	// Only take over on panels tall enough to benefit (height > SB_HEIGHT).
+	// Activate when LMS says the player is off; deactivate as soon as it is
+	// back on. We key off bigclock_lms_power_off (the latched aude enable_spdif
+	// power signal) rather than output.state == OUTPUT_OFF: on a cold boot
+	// output.state is OUTPUT_STOPPED (not OUTPUT_OFF) until the first aude, which
+	// previously left the clock stuck and prevented releasing to the LMS UI on
+	// the first power-on. Only take over on panels tall enough (height > SB_HEIGHT).
 	if (GDS_GetHeight(display) > SB_HEIGHT) {
-		if (output.state == OUTPUT_OFF) {
+		if (bigclock_lms_power_off) {
 			if (!bigclock_is_active()) bigclock_activate();
 		} else if (bigclock_is_active()) {
 			bigclock_deactivate();
