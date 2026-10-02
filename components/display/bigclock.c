@@ -47,8 +47,8 @@ static const char *TAG = "bigclock";
 extern struct GDS_Device *display;
 
 /* ---- configuration (from NVS "clock_config") -------------------------- */
-/* Syntax: tz=<POSIX TZ>[,ntp=<server>][,fmt=12|24][,yoff=<pixels>][,scale=<n>]
- * Example: tz=EST5EDT,M3.2.0,M11.1.0,ntp=pool.ntp.org,fmt=12,yoff=-16,scale=7
+/* Syntax: tz=<POSIX TZ>[,ntp=<server>][,fmt=12|24][,yoff=<pixels>][,scale=<n>][,dotgap=<n>]
+ * Example: tz=EST5EDT,M3.2.0,M11.1.0,ntp=pool.ntp.org,fmt=12,yoff=-16,scale=7,dotgap=1
  *
  * yoff is a signed vertical offset in panel pixels applied as a delta from the
  * vertically-centered position: negative moves the clock UP, positive moves it
@@ -59,9 +59,15 @@ extern struct GDS_Device *display;
  * digit ink is ~7px tall, so on-panel digit height ~= 7 * scale (scale 7 ~=
  * 49px, 8 ~= 56px).
  *
- * Both yoff and scale let you tune the clock live to suit how the panel is
- * physically mounted, without rebuilding firmware - edit the NVS value and
- * reboot (bigclock_init re-reads it at startup).
+ * dotgap is a VFD "dot matrix" effect: each pseudo-pixel block is drawn
+ * (scale-dotgap) x (scale-dotgap) with a dark gutter on its right and bottom,
+ * so the digits show a grid of discrete dots like a real vacuum-fluorescent
+ * display rather than solid strokes. 0 = solid (off), 1 = subtle (default),
+ * larger = more pronounced. Clamped to 0..scale-1 so a block never vanishes.
+ *
+ * yoff, scale and dotgap all let you tune the clock live to suit the panel
+ * without rebuilding firmware - edit the NVS value and reboot (bigclock_init
+ * re-reads it at startup).
  */
 
 /* Font scale default and clamp bounds. These are declared here (before
@@ -77,6 +83,7 @@ static char  s_ntp[64]  = "pool.ntp.org";
 static bool  s_fmt12    = false;
 static int   s_yoff     = 0;    /* vertical offset, px; -up / +down, delta from center */
 static int   s_scale    = 0;    /* font magnification; set from NVS 'scale=' in init, clamped */
+static int   s_dotgap   = 1;    /* VFD dot-matrix gutter per block, px; NVS 'dotgap=', clamped */
 
 static bool        s_active      = false;
 static bool        s_sntp_started = false;
@@ -118,6 +125,9 @@ void bigclock_init(void) {
         if (parse_kv(cfg, "scale=", tmp, sizeof(tmp))) {
             s_scale = atoi(tmp);
         }
+        if (parse_kv(cfg, "dotgap=", tmp, sizeof(tmp))) {
+            s_dotgap = atoi(tmp);   /* explicit value (incl. 0 = off) overrides default */
+        }
         free(cfg);
     }
 
@@ -126,11 +136,16 @@ void bigclock_init(void) {
     if (s_scale < BIGCLOCK_SCALE_MIN) s_scale = BIGCLOCK_SCALE_MIN;
     if (s_scale > BIGCLOCK_SCALE_MAX) s_scale = BIGCLOCK_SCALE_MAX;
 
+    /* Clamp the dot-matrix gutter to 0..scale-1 so each block keeps >=1 lit
+     * pixel. (Depends on the clamped scale above.) */
+    if (s_dotgap < 0) s_dotgap = 0;
+    if (s_dotgap > s_scale - 1) s_dotgap = s_scale - 1;
+
     /* Apply timezone so localtime() is correct. */
     setenv("TZ", s_tz, 1);
     tzset();
 
-    ESP_LOGI(TAG, "init tz='%s' ntp='%s' fmt=%s yoff=%d scale=%d", s_tz, s_ntp, s_fmt12 ? "12h" : "24h", s_yoff, s_scale);
+    ESP_LOGI(TAG, "init tz='%s' ntp='%s' fmt=%s yoff=%d scale=%d dotgap=%d", s_tz, s_ntp, s_fmt12 ? "12h" : "24h", s_yoff, s_scale, s_dotgap);
 
     /* Create (but do not start) the 1 Hz repaint timer. */
     if (!s_timer) {
@@ -247,8 +262,13 @@ static void draw_glyph_scaled(char c, int x0, int y0, int scale) {
             if (colData[yByte] & (1 << yBit)) {
                 int px = x0 + col * scale;
                 int py = y0 + row * scale;
-                for (int dx = 0; dx < scale; dx++)
-                    for (int dy = 0; dy < scale; dy++)
+                /* Draw the pseudo-pixel as a (scale-dotgap) square, leaving a
+                 * dark gutter on the right and bottom edges so adjacent lit
+                 * blocks don't merge - this gives the VFD dot-matrix look.
+                 * s_dotgap is clamped to <= scale-1, so lit >= 1. */
+                int lit = scale - s_dotgap;
+                for (int dx = 0; dx < lit; dx++)
+                    for (int dy = 0; dy < lit; dy++)
                         GDS_DrawPixel(display, px + dx, py + dy, GDS_COLOR_WHITE);
             }
         }
